@@ -1,23 +1,19 @@
-﻿//--------------------------------------------------------------------
-// Copyright (C) Microsoft.  All rights reserved.
-// Example of signing a hash and 
-// verifying the hash signature.
-#pragma comment(lib, "crypt32.lib")
+﻿#pragma comment(lib, "crypt32.lib")
 
 #include <stdio.h>
 #include <windows.h>
 #include <Wincrypt.h>
+
 #define MY_ENCODING_TYPE  (PKCS_7_ASN_ENCODING | X509_ASN_ENCODING)
 void MyHandleError( char * s );
+void MyHandleErrorWithExit( char * s );
 
 #define TOTAL_BYTES_READ    1024
 #define OFFSET_BYTES 1024
 
-/*
-    TODO:
-        - READ SIGNATURE FROM REGISTRY
-        - CHECK SIGNATURE AND HASH
-*/
+#include <fstream>
+#include <sstream>
+#include <iostream>
 
 BOOL CreateRegistryKey( HKEY hKeyParent, LPSTR subkey )
 {
@@ -80,7 +76,7 @@ BOOL WriteDataToRegistry( CONST BYTE * lpData, DWORD cbData )
 {
     //-------------------------------------------------------------------
     // Declare and initialize variables.
-    LPSTR subKey = "Software\\Efremova";
+    LPSTR subKey = "Software/Efremova";
     LPCSTR valueName = "Signature";
     //-------------------------------------------------------------------
     // Create registry key
@@ -172,12 +168,85 @@ BOOL ReadUserInfoFromRegistry( HKEY hKeyParent, LPSTR subkey, LPCSTR valueName, 
     }
 }
 
+std::string GetDataForHash()
+{
+    std::stringstream ss;
+
+    // number of mouse buttons
+    int mouseButtons = GetSystemMetrics( SM_CMOUSEBUTTONS );
+    ss << mouseButtons;
+
+    // screen height
+    int screenHeight = GetSystemMetrics( SM_CYSCREEN );
+    ss << screenHeight;
+
+    // list of disk devices
+    DWORD dwSize = MAX_PATH;
+    char szLogicalDrives[MAX_PATH] = { 0 };
+    DWORD dwResult = GetLogicalDriveStrings( dwSize, szLogicalDrives );
+
+    if( dwResult > 0 && dwResult <= MAX_PATH )
+    {
+        char * szSingleDrive = szLogicalDrives;
+        while( *szSingleDrive )
+        {
+            ss << szSingleDrive;
+
+            // get the next drive
+            szSingleDrive += strlen( szSingleDrive ) + 1;
+        }
+    }
+
+    // file system of current disk
+    char SysNameBuffer[MAX_PATH];
+
+    if( GetVolumeInformation(
+        NULL,
+        NULL,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        SysNameBuffer,
+        sizeof( SysNameBuffer ) ) )
+    {
+        ss << SysNameBuffer;
+    }
+
+    return ss.str();
+}
+
 void Install()
 {
     //-------------------------------------------------------------------
+    // Copy exe to dest
+    const char * src = "BIS_LAB_1.exe";
+
+    std::string destFolder;
+    std::cin >> destFolder;
+
+    destFolder += src;
+
+    if( CopyFile(
+        src, 
+        destFolder.c_str(),
+        FALSE ) )
+    {
+        printf("Successfully copied file to dest\n");
+    }
+    else
+    {
+        MyHandleErrorWithExit( "Error during CopyFile." );
+    }
+    //-------------------------------------------------------------------
+    // Data for hash
+    std::string data = GetDataForHash();
+
+    printf( "Data for hash '%s'\n", data.c_str() );
+    //-------------------------------------------------------------------
     // Declare and initialize variables.
     HCRYPTPROV hProv;
-    BYTE * pbBuffer = (BYTE *)"The data that is to be hashed and signed.";
+    BYTE * pbBuffer = (BYTE *)data.c_str();
     DWORD dwBufferLen = strlen( (char *)pbBuffer ) + 1;
     HCRYPTHASH hHash;
     HCRYPTKEY hKey;
@@ -196,7 +265,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptAcquireContext." );
+        MyHandleErrorWithExit( "Error during CryptAcquireContext." );
     }
     //-------------------------------------------------------------------
     // Get the public at signature key. This is the public key
@@ -213,7 +282,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptGetUserKey for signkey." );
+        MyHandleErrorWithExit( "Error during CryptGetUserKey for signkey." );
     }
     //-------------------------------------------------------------------
     // Create the hash object.
@@ -229,7 +298,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptCreateHash." );
+        MyHandleErrorWithExit( "Error during CryptCreateHash." );
     }
     //-------------------------------------------------------------------
     // Compute the cryptographic hash of the buffer.
@@ -243,7 +312,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptHashData." );
+        MyHandleErrorWithExit( "Error during CryptHashData." );
     }
     //-------------------------------------------------------------------
     // Determine the size of the signature and allocate memory.
@@ -260,7 +329,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptSignHash." );
+        MyHandleErrorWithExit( "Error during CryptSignHash." );
     }
     //-------------------------------------------------------------------
     // Allocate memory for the signature buffer.
@@ -270,7 +339,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Out of memory." );
+        MyHandleErrorWithExit( "Out of memory." );
     }
     //-------------------------------------------------------------------
     // Sign the hash object.
@@ -286,7 +355,7 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during CryptSignHash." );
+        MyHandleErrorWithExit( "Error during CryptSignHash." );
     }
     //-------------------------------------------------------------------
     // write
@@ -298,18 +367,18 @@ void Install()
     }
     else
     {
-        MyHandleError( "Error during WriteDataToRegistry" );
+        MyHandleErrorWithExit( "Error during WriteDataToRegistry" );
     }
     
 
     //-------------------------------------------------------------------
     // Destroy the hash object.
 
-    //if( hHash )
-    //    CryptDestroyHash( hHash );
+    if( hHash )
+        CryptDestroyHash( hHash );
 
-    //printf( "The hash object has been destroyed.\n" );
-    //printf( "The signing phase of this program is completed.\n\n" );
+    printf( "The hash object has been destroyed.\n" );
+    printf( "The signing phase of this program is completed.\n\n" );
 
     //-------------------------------------------------------------------
     // Free memory to be used to store signature.
@@ -330,12 +399,18 @@ void Install()
         CryptReleaseContext( hProv, 0 );
 }
 
-void Check()
+bool Check()
 {
+    //-------------------------------------------------------------------
+    // Get data for hash
+    std::string data = GetDataForHash();
+
+    printf( "Data for hash '%s'\n", data.c_str() );
+
     //-------------------------------------------------------------------
     // Declare and initialize variables.
 
-    LPSTR subKey = "Software\\Efremova";
+    LPSTR subKey = "Software/Efremova";
     LPCSTR valueName = "Signature";
 
     PBYTE pbSignature = nullptr;
@@ -356,13 +431,14 @@ void Check()
     else
     {
         MyHandleError( "Error during ReadUserInfoFromRegistry." );
+        return false;
     }
 
     //-------------------------------------------------------------------
     // Declare and initialize variables.
 
     HCRYPTPROV hProv;
-    BYTE * pbBuffer = (BYTE *)"The data that is to be hashed and signed.";
+    BYTE * pbBuffer = (BYTE *)data.c_str();
     DWORD dwBufferLen = strlen( (char *)pbBuffer ) + 1;
     HCRYPTHASH hHash;
     HCRYPTKEY hKey;
@@ -385,6 +461,9 @@ void Check()
     else
     {
         MyHandleError( "Error during CryptAcquireContext." );
+        if( pbSignature )
+            free( pbSignature );
+        return false;
     }
     //-------------------------------------------------------------------
     // Get the public at signature key. This is the public key
@@ -403,6 +482,11 @@ void Check()
     else
     {
         MyHandleError( "Error during CryptGetUserKey for signkey." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     ////-------------------------------------------------------------------
     // Export the public key. Here the public key is exported to a 
@@ -423,6 +507,11 @@ void Check()
     else
     {
         MyHandleError( "Error computing BLOB length." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Allocate memory for the pbKeyBlob.
@@ -434,6 +523,11 @@ void Check()
     else
     {
         MyHandleError( "Out of memory. \n" );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Do the actual exporting into the key BLOB.
@@ -451,6 +545,11 @@ void Check()
     else
     {
         MyHandleError( "Error during CryptExportKey." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // In the second phase, the hash signature is verified.
@@ -483,6 +582,11 @@ void Check()
     else
     {
         MyHandleError( "Public key import failed." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Create a new hash object.
@@ -499,6 +603,11 @@ void Check()
     else
     {
         MyHandleError( "Error during CryptCreateHash." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Compute the cryptographic hash of the buffer.
@@ -514,6 +623,13 @@ void Check()
     else
     {
         MyHandleError( "Error during CryptHashData." );
+        if( pbSignature )
+            free( pbSignature );
+        if( hHash )
+            CryptDestroyHash( hHash );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Validate the digital signature.
@@ -531,6 +647,13 @@ void Check()
     else
     {
         printf( "Signature not validated!\n" );
+        if( pbSignature )
+            free( pbSignature );
+        if( hHash )
+            CryptDestroyHash( hHash );
+        if( hProv )
+            CryptReleaseContext( hProv, 0 );
+        return false;
     }
     //-------------------------------------------------------------------
     // Free memory to be used to store signature.
@@ -549,48 +672,17 @@ void Check()
 
     if( hProv )
         CryptReleaseContext( hProv, 0 );
-}
 
-void GrabData()
-{
-    /*
-        mouse btn count | screen height
-	        nIndex = SM_CMOUSEBUTTONS
-	        nIndex = SM_CYSCREEN
-	        int GetSystemMetrics(int nIndex);
-        disk devices kit
-	        DWORD GetLogicalDriveStrings(DWORN nBufferLength, LPTSTR lpBuffer);
-        app disk data: file system (lpFileSystemNameBuffer)
-	        BOOL GetVolumeInformation(LPCTSTR lpRootPathName,
-		        LPTSTR lpVolumeNameBuffer,
-		        DWORD nVolumeNameSize,
-		        LPDWORD lpVolumeSerialNumber,
-		        LPDWORD lpMaximumComponentLength,
-		        LPDWORD lpFileSystemFlags,
-		        LPTSTR lpFileSystemNameBuffer,
-		        DWORD nFileSystemNameSize)
-    */
-
-    int mouseButtons = GetSystemMetrics( SM_CMOUSEBUTTONS );
-    printf( "mouseButtons = '%d'\n", mouseButtons );
-
-    int screenHeight = GetSystemMetrics( SM_CYSCREEN );
-    printf( "screenHeight = '%d'\n", screenHeight );
-
-    const DWORD nBufferLength = 32;
-    CHAR lpBuffer[nBufferLength] = { '\0' };
-
-    if( GetLogicalDriveStrings( nBufferLength, lpBuffer ) != 0 )
-    {
-        printf( "screenHeight = '%s'\n", lpBuffer );
-    }
+    return true;
 }
 
 void main( void )
 {
-    GrabData();
-    //Install();
-    //Check();
+    printf( "INSTALL:\n" );
+    Install();
+
+    printf( "CHECK:\n" );
+    Check();
 } //  End of main
 
 //-------------------------------------------------------------------
@@ -601,6 +693,13 @@ void main( void )
 //  that does more extensive error reporting.
 
 void MyHandleError( char * s )
+{
+    fprintf( stderr, "An error occurred in running the program. \n" );
+    fprintf( stderr, "%s\n", s );
+    fprintf( stderr, "Error number %x.\n", GetLastError() );
+} // End of MyHandleError
+
+void MyHandleErrorWithExit( char * s )
 {
     fprintf( stderr, "An error occurred in running the program. \n" );
     fprintf( stderr, "%s\n", s );
